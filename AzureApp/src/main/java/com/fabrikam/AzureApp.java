@@ -2,17 +2,46 @@ package com.fabrikam;
 
 import com.azure.core.credential.TokenCredential;
 import com.azure.core.http.policy.HttpLogDetailLevel;
+import com.azure.core.http.policy.HttpLogOptions;
 import com.azure.core.management.AzureEnvironment;
 import com.azure.core.management.Region;
 import com.azure.core.management.profile.AzureProfile;
 import com.azure.identity.AzureAuthorityHosts;
+import com.azure.identity.DefaultAzureCredentialBuilder;
 import com.azure.identity.EnvironmentCredentialBuilder;
 import com.azure.resourcemanager.AzureResourceManager;
+import com.azure.resourcemanager.appservice.AppServiceManager;
+import com.azure.resourcemanager.appservice.models.AppServicePlan;
+import com.azure.resourcemanager.appservice.models.OperatingSystem;
 import com.azure.resourcemanager.appservice.models.PricingTier;
 import com.azure.resourcemanager.appservice.models.WebApp;
+import com.azure.resourcemanager.compute.models.AvailabilitySet;
+import com.azure.resourcemanager.compute.models.AvailabilitySetSkuTypes;
+import com.azure.resourcemanager.compute.models.CachingTypes;
+import com.azure.resourcemanager.compute.models.Disk;
+import com.azure.resourcemanager.compute.models.DiskInstanceView;
+import com.azure.resourcemanager.compute.models.DiskSkuTypes;
+import com.azure.resourcemanager.compute.models.InstanceViewStatus;
 import com.azure.resourcemanager.compute.models.KnownLinuxVirtualMachineImage;
+import com.azure.resourcemanager.compute.models.OperatingSystemTypes;
 import com.azure.resourcemanager.compute.models.VirtualMachine;
 import com.azure.resourcemanager.compute.models.VirtualMachineSizeTypes;
+import com.azure.resourcemanager.costmanagement.CostManagementManager;
+import com.azure.resourcemanager.costmanagement.models.ExportType;
+import com.azure.resourcemanager.costmanagement.models.FunctionType;
+import com.azure.resourcemanager.costmanagement.models.QueryAggregation;
+import com.azure.resourcemanager.costmanagement.models.QueryColumnType;
+import com.azure.resourcemanager.costmanagement.models.QueryDataset;
+import com.azure.resourcemanager.costmanagement.models.QueryDefinition;
+import com.azure.resourcemanager.costmanagement.models.QueryGrouping;
+import com.azure.resourcemanager.costmanagement.models.QueryResult;
+import com.azure.resourcemanager.costmanagement.models.TimeframeType;
+import com.azure.resourcemanager.network.NetworkManager;
+import com.azure.resourcemanager.network.models.Network;
+import com.azure.resourcemanager.network.models.NetworkInterface;
+import com.azure.resourcemanager.network.models.PublicIPSkuType;
+import com.azure.resourcemanager.network.models.PublicIpAddress;
+import com.azure.resourcemanager.resources.models.ResourceGroup;
 import com.azure.resourcemanager.sql.models.SqlDatabase;
 import com.azure.resourcemanager.sql.models.SqlServer;
 import com.azure.resourcemanager.storage.models.PublicEndpoints;
@@ -31,13 +60,254 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Scanner;
 
 public class AzureApp {
     public static void main(String[] args) {
-        connectDB();
+        computeDoc();
+    }
+
+    public static void listVM() {
+        TokenCredential credential = new EnvironmentCredentialBuilder()
+                .authorityHost(AzureAuthorityHosts.AZURE_PUBLIC_CLOUD)
+                .build();
+
+        // If you don't set the tenant ID and subscription ID via environment variables,
+        // change to create the Azure profile with tenantId, subscriptionId, and Azure environment.
+        AzureProfile profile = new AzureProfile(AzureEnvironment.AZURE);
+
+        AzureResourceManager azureResourceManager = AzureResourceManager.configure()
+                .withLogLevel(HttpLogDetailLevel.BODY_AND_HEADERS)
+                .authenticate(credential, profile)
+                .withDefaultSubscription();
+
+        System.out.println(azureResourceManager.resourceGroups().list().stream().count());
+    }
+
+    private static void computeDoc() {
+
+        TokenCredential credential = new EnvironmentCredentialBuilder()
+                .authorityHost(AzureAuthorityHosts.AZURE_PUBLIC_CLOUD)
+                .build();
+
+        // If you don't set the tenant ID and subscription ID via environment variables,
+        // change to create the Azure profile with tenantId, subscriptionId, and Azure environment.
+        AzureProfile profile = new AzureProfile(AzureEnvironment.AZURE);
+
+        AzureResourceManager azure = AzureResourceManager.configure()
+                .withLogLevel(HttpLogDetailLevel.BODY_AND_HEADERS)
+                .authenticate(credential, profile)
+                .withDefaultSubscription();
+
+        System.out.println("Creating resource group...");
+        ResourceGroup resourceGroup = azure.resourceGroups()
+                .define("myResourceGroup")
+                .withRegion(Region.US_EAST)
+                .create();
+
+        System.out.println("Creating availability set...");
+        AvailabilitySet availabilitySet = azure.availabilitySets()
+                .define("myAvailabilitySet")
+                .withRegion(Region.US_EAST)
+                .withExistingResourceGroup("myResourceGroup")
+                .create();
+
+        System.out.println("Creating public IP address...");
+        PublicIpAddress publicIPAddress = azure.publicIpAddresses()
+                .define("myPublicIP")
+                .withRegion(Region.US_EAST)
+                .withExistingResourceGroup("myResourceGroup")
+                .withDynamicIP()
+                .create();
+
+        System.out.println("Creating virtual network...");
+        Network network = azure.networks()
+                .define("myVN")
+                .withRegion(Region.US_EAST)
+                .withExistingResourceGroup("myResourceGroup")
+                .withAddressSpace("10.0.0.0/16")
+                .withSubnet("mySubnet", "10.0.0.0/24")
+                .create();
+
+        System.out.println("Creating network interface...");
+        NetworkInterface networkInterface = azure.networkInterfaces()
+                .define("myNIC")
+                .withRegion(Region.US_EAST)
+                .withExistingResourceGroup("myResourceGroup")
+                .withExistingPrimaryNetwork(network)
+                .withSubnet("mySubnet")
+                .withPrimaryPrivateIPAddressDynamic()
+                .withExistingPrimaryPublicIPAddress(publicIPAddress)
+                .create();
+
+        System.out.println("Creating virtual machine...");
+        VirtualMachine virtualMachine = azure.virtualMachines()
+                .define("myVM")
+                .withRegion(Region.US_EAST)
+                .withExistingResourceGroup("myResourceGroup")
+                .withExistingPrimaryNetworkInterface(networkInterface)
+                .withLatestWindowsImage("MicrosoftWindowsServer", "WindowsServer", "2012-R2-Datacenter")
+                .withAdminUsername("azureuser")
+                .withAdminPassword("Azure12345678")
+                .withComputerName("myVM")
+                .withExistingAvailabilitySet(availabilitySet)
+                .withSize("Standard_DS1")
+                .create();
+        Scanner input = new Scanner(System.in);
+        System.out.println("Press enter to get information about the VM...");
+        input.nextLine();
+
+        Disk managedDisk = azure.disks().define("myosdisk")
+                .withRegion(Region.US_EAST)
+                .withExistingResourceGroup("myResourceGroup")
+                .withWindowsFromVhd("https://mystorage.blob.core.windows.net/vhds/myosdisk.vhd")
+                .withStorageAccountName("mystorage")
+                .withSizeInGB(128)
+                .withSku(DiskSkuTypes.PREMIUM_LRS)
+                .create();
+
+        azure.virtualMachines().define("myVM2")
+                .withRegion(Region.US_EAST)
+                .withExistingResourceGroup("myResourceGroup")
+                .withExistingPrimaryNetworkInterface(networkInterface)
+                .withSpecializedOSDisk(managedDisk, OperatingSystemTypes.WINDOWS)
+                .withExistingAvailabilitySet(availabilitySet)
+                .withSize(VirtualMachineSizeTypes.STANDARD_DS1)
+                .create();
+
+        VirtualMachine vm = azure.virtualMachines().getByResourceGroup("myResourceGroup", "myVM");
+
+        System.out.println("hardwareProfile");
+        System.out.println("    vmSize: " + vm.size());
+        System.out.println("storageProfile");
+        System.out.println("  imageReference");
+        System.out.println("    publisher: " + vm.storageProfile().imageReference().publisher());
+        System.out.println("    offer: " + vm.storageProfile().imageReference().offer());
+        System.out.println("    sku: " + vm.storageProfile().imageReference().sku());
+        System.out.println("    version: " + vm.storageProfile().imageReference().version());
+        System.out.println("  osDisk");
+        System.out.println("    osType: " + vm.storageProfile().osDisk().osType());
+        System.out.println("    name: " + vm.storageProfile().osDisk().name());
+        System.out.println("    createOption: " + vm.storageProfile().osDisk().createOption());
+        System.out.println("    caching: " + vm.storageProfile().osDisk().caching());
+        System.out.println("osProfile");
+        System.out.println("    computerName: " + vm.osProfile().computerName());
+        System.out.println("    adminUserName: " + vm.osProfile().adminUsername());
+        System.out.println("    provisionVMAgent: " + vm.osProfile().windowsConfiguration().provisionVMAgent());
+        System.out.println(
+                "    enableAutomaticUpdates: " + vm.osProfile().windowsConfiguration().enableAutomaticUpdates());
+        System.out.println("networkProfile");
+        System.out.println("    networkInterface: " + vm.primaryNetworkInterfaceId());
+        System.out.println("vmAgent");
+        System.out.println("  vmAgentVersion: " + vm.instanceView().vmAgent().vmAgentVersion());
+        System.out.println("    statuses");
+        for (InstanceViewStatus status : vm.instanceView().vmAgent().statuses()) {
+            System.out.println("    code: " + status.code());
+            System.out.println("    displayStatus: " + status.displayStatus());
+            System.out.println("    message: " + status.message());
+            System.out.println("    time: " + status.time());
+        }
+        System.out.println("disks");
+        for (DiskInstanceView disk : vm.instanceView().disks()) {
+            System.out.println("  name: " + disk.name());
+            System.out.println("  statuses");
+            for (InstanceViewStatus status : disk.statuses()) {
+                System.out.println("    code: " + status.code());
+                System.out.println("    displayStatus: " + status.displayStatus());
+                System.out.println("    time: " + status.time());
+            }
+        }
+        System.out.println("VM general status");
+        System.out.println("  provisioningStatus: " + vm.provisioningState());
+        System.out.println("  id: " + vm.id());
+        System.out.println("  name: " + vm.name());
+        System.out.println("  type: " + vm.type());
+        System.out.println("VM instance status");
+        for (InstanceViewStatus status : vm.instanceView().statuses()) {
+            System.out.println("  code: " + status.code());
+            System.out.println("  displayStatus: " + status.displayStatus());
+        }
+        System.out.println("Press enter to continue...");
+        input.nextLine();
+
+
+        System.out.println("Stopping vm...");
+        vm.powerOff();
+        System.out.println("Press enter to continue...");
+        input.nextLine();
+
+        vm.deallocate();
+
+        System.out.println("Starting vm...");
+        vm.start();
+        System.out.println("Press enter to continue...");
+        input.nextLine();
+
+
+        System.out.println("Resizing vm...");
+        vm.update()
+                .withSize(VirtualMachineSizeTypes.STANDARD_DS2)
+                .apply();
+        System.out.println("Press enter to continue...");
+        input.nextLine();
+
+
+        System.out.println("Adding data disk...");
+        vm.update()
+                .withNewDataDisk(2, 0, CachingTypes.READ_WRITE)
+                .apply();
+        System.out.println("Press enter to delete resources...");
+        input.nextLine();
+
+
+        System.out.println("Deleting resources...");
+        azure.resourceGroups().deleteByName("myResourceGroup");
+
+        azure.resourceGroups().beginDeleteByName("myResourceGroup");
+    }
+
+    private static void webappDoc() {
+        TokenCredential credential = new EnvironmentCredentialBuilder()
+                .authorityHost(AzureAuthorityHosts.AZURE_PUBLIC_CLOUD)
+                .build();
+
+        // If you don't set the tenant ID and subscription ID via environment variables,
+        // change to create the Azure profile with tenantId, subscriptionId, and Azure environment.
+        AzureProfile profile = new AzureProfile(AzureEnvironment.AZURE);
+
+        AzureResourceManager azure = AzureResourceManager.configure()
+                .withLogLevel(HttpLogDetailLevel.BASIC)
+                .authenticate(credential, profile)
+                .withDefaultSubscription();
+
+        AppServiceManager appServiceManager = AppServiceManager
+                .authenticate(credential, profile);
+
+
+        AppServicePlan myLinuxAppServicePlan =
+                appServiceManager
+                        .appServicePlans()
+                        .define("myServicePlan")
+                        .withRegion(Region.US_WEST)
+                        .withNewResourceGroup("myResourceGroup")
+                        .withPricingTier(PricingTier.PREMIUM_P1)
+                        .withOperatingSystem(OperatingSystem.WINDOWS)
+                        .withPerSiteScaling(false)
+                        .withCapacity(2)
+                        .create();
+
+        WebApp app = azure.webApps().define("newLinuxWebApp")
+                .withExistingLinuxPlan(myLinuxAppServicePlan)
+                .withExistingResourceGroup("myResourceGroup")
+                .withPrivateDockerHubImage("username/my-java-app")
+                .withCredentials("dockerHubUser", "dockerHubPassword")
+                .withAppSetting("PORT", "8080")
+                .create();
+
     }
 
     private static void createLinuxVM() { // pass
@@ -243,5 +513,86 @@ public class AzureApp {
             System.out.println(e.getMessage());
             e.printStackTrace();
         }
+    }
+
+
+    private static void testCostManagement() {
+        AzureProfile profile = new AzureProfile(AzureEnvironment.AZURE);
+        TokenCredential credential = new DefaultAzureCredentialBuilder()
+                .authorityHost(profile.getEnvironment().getActiveDirectoryEndpoint())
+                .build();
+
+        HttpLogOptions httpLogOptions = new HttpLogOptions();
+        httpLogOptions.setLogLevel(HttpLogDetailLevel.BODY_AND_HEADERS);
+
+        CostManagementManager manager = CostManagementManager.configure().withLogOptions(httpLogOptions)
+                .authenticate(credential, profile);
+
+        Map<String, QueryAggregation> aggregateByTotalCost = Map.of("totalCost", new QueryAggregation()
+                .withName("Cost")
+                .withFunction(FunctionType.SUM));
+
+        List<QueryGrouping> groupByTag = Collections.singletonList(
+                new QueryGrouping()
+                        .withType(QueryColumnType.fromString("TagKey"))
+                        .withName("myTag"));
+
+        QueryDataset queryDataset = new QueryDataset()
+                .withAggregation(
+                        aggregateByTotalCost)
+                .withGrouping(
+                        groupByTag);
+
+        QueryDefinition queryDefinition = new QueryDefinition()
+                .withType(ExportType.ACTUAL_COST)
+                .withTimeframe(TimeframeType.MONTH_TO_DATE)
+                .withDataset(queryDataset);
+
+        String scope = "subscriptions/ec0aa5f7-9e78-40c9-85cd-535c6305b380";
+
+        /*
+        {
+    "type": "ActualCost",
+    "timeframe": "MonthToDate",
+    "dataset": {
+        "aggregation": {
+            "totalCost": {
+                "name": "Cost",
+                "function": "Sum"
+            }
+        },
+        "grouping": [
+            {
+                "type": "Tag",
+                "name": "myTag"
+            }
+        ]
+    }
+}
+         */
+        QueryResult usage = manager
+                .queries()
+                .usage(scope, queryDefinition);
+
+        System.out.println(usage);
+    }
+
+    private static void testNetwork() {
+        AzureProfile profile = new AzureProfile(AzureEnvironment.AZURE);
+        TokenCredential credential = new DefaultAzureCredentialBuilder()
+                .authorityHost(profile.getEnvironment().getActiveDirectoryEndpoint())
+                .build();
+        NetworkManager networkManager = NetworkManager
+                .authenticate(credential, profile);
+
+        PublicIpAddress pip =
+                networkManager
+                        .publicIpAddresses()
+                        .define("my-network-ip")
+                        .withRegion(Region.US_EAST)
+                        .withNewResourceGroup("rg-haoling")
+                        .withSku(PublicIPSkuType.STANDARD)
+                        .withStaticIP()
+                        .create();
     }
 }
